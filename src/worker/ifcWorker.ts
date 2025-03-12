@@ -190,7 +190,7 @@ interface WorkerMessageEvent {
 }
 
 self.onmessage = async (event: WorkerMessageEvent) => {
-  const { arrayBuffer, fileName, language = "en", mappingConfig } = event.data;
+  const { arrayBuffer, language = "en", mappingConfig } = event.data;
 
   console.log("Worker: Language received:", language);
   const normalizedLanguage = language.toLowerCase().split("-")[0];

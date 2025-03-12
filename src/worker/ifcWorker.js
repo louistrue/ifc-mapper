@@ -1,4 +1,3 @@
-/* eslint-disable */
 // Load Pyodide without using importScripts (which doesn't work in module workers)
 import { loadPyodideInstance } from "./pyodideLoader.js";
 
@@ -187,14 +186,11 @@ await micropip.install('https://cdn.jsdelivr.net/gh/IfcOpenShell/wasm-wheels@33b
       type: "progress",
       message: getConsoleMessage(
         "console.loading.dependencies",
-        "Installing additional dependencies..."
+        "Installing basic dependencies..."
       ),
     });
     await pyodide.runPythonAsync(`
-await micropip.install('lark')
-await micropip.install('ifctester')
-await micropip.install('bcf-client')
-await micropip.install('pystache')
+await micropip.install('numpy')
     `);
 
     return pyodide;
@@ -233,9 +229,100 @@ self.onmessage = async (event) => {
 
     await loadPyodideAndPackages();
 
+    // First step: Load the IFC file and analyze its structure
     const uint8Array = new Uint8Array(arrayBuffer);
     pyodide.FS.writeFile("model.ifc", uint8Array);
 
+    // Get available property sets
+    self.postMessage({
+      type: "progress",
+      message: getConsoleMessage(
+        "console.loading.analyzing",
+        "Analyzing IFC structure..."
+      ),
+    });
+
+    // Get all property sets from the model first, to inform user interface
+    const ifc_analysis = await pyodide.runPythonAsync(`
+import ifcopenshell
+import json
+from datetime import datetime
+
+# Open the IFC model
+model = ifcopenshell.open("model.ifc")
+
+# Get the distinct property set names in the model
+custom_pset_names = set()
+custom_quantity_names = set()
+for element in model.by_type("IfcElement"):
+    if hasattr(element, "IsDefinedBy"):
+        for definition in element.IsDefinedBy:
+            if hasattr(definition, "RelatingPropertyDefinition"):
+                prop_def = definition.RelatingPropertyDefinition
+                if prop_def.is_a("IfcPropertySet"):
+                    custom_pset_names.add(prop_def.Name)
+                elif prop_def.is_a("IfcElementQuantity"):
+                    custom_quantity_names.add(prop_def.Name)
+
+# Get all standard schema property sets and quantities
+standard_psets = []
+standard_quantities = []
+
+# Since ifcopenshell.util.pset is not available, we'll directly identify standard property sets
+# Standard property sets start with "Pset_" and quantity sets start with "Qto_"
+# Retrieve all property sets from the model and filter standard ones
+for element in model.by_type("IfcPropertySet"):
+    if element.Name and element.Name.startswith("Pset_"):
+        if element.Name not in standard_psets:
+            standard_psets.append(element.Name)
+    
+for element in model.by_type("IfcElementQuantity"):
+    if element.Name and element.Name.startswith("Qto_"):
+        if element.Name not in standard_quantities:
+            standard_quantities.append(element.Name)
+
+# Add common standard property sets if they're not already in the model
+common_psets = [
+    "Pset_WallCommon", "Pset_BeamCommon", "Pset_SlabCommon", "Pset_ColumnCommon",
+    "Pset_DoorCommon", "Pset_WindowCommon", "Pset_SpaceCommon", "Pset_BuildingCommon",
+    "Pset_BuildingStoreyCommon", "Pset_SiteCommon", "Pset_CurtainWallCommon"
+]
+for pset in common_psets:
+    if pset not in standard_psets:
+        standard_psets.append(pset)
+
+common_qtos = [
+    "Qto_WallBaseQuantities", "Qto_BeamBaseQuantities", "Qto_SlabBaseQuantities",
+    "Qto_ColumnBaseQuantities", "Qto_DoorBaseQuantities", "Qto_WindowBaseQuantities",
+    "Qto_SpaceBaseQuantities"
+]
+for qto in common_qtos:
+    if qto not in standard_quantities:
+        standard_quantities.append(qto)
+
+# Remove duplicates and sort
+standard_psets = sorted(list(set(standard_psets)))
+standard_quantities = sorted(list(set(standard_quantities)))
+
+# Get all element types in the model
+element_types = set()
+for element in model.by_type("IfcElement"):
+    element_types.add(element.is_a())
+
+model_info = {
+    "pset_names": list(custom_pset_names),
+    "quantity_names": list(custom_quantity_names),
+    "standard_psets": standard_psets,
+    "standard_quantities": standard_quantities,
+    "element_types": list(element_types)
+}
+
+json.dumps(model_info)
+    `);
+
+    const modelInfo = JSON.parse(ifc_analysis);
+
+    // Now apply the mapping configuration if provided
     const mappingConfigStr = JSON.stringify(mappingConfig || {});
     const fileNameStr = JSON.stringify(fileName || "unnamed_model.ifc");
 
@@ -251,6 +338,7 @@ self.onmessage = async (event) => {
 import ifcopenshell
 import json
 from datetime import datetime
+import base64
 
 # Open the IFC model
 model = ifcopenshell.open("model.ifc")
@@ -261,53 +349,186 @@ mapping_config = json.loads('''${mappingConfigStr}''')
 file_name = json.loads('''${fileNameStr}''')
 
 def apply_mapping(model, mapping_config):
+    changes_log = []
+    # Counter for changes made
+    changes_made = 0
+    
     for element in model.by_type("IfcElement"):
-        if hasattr(element, "HasProperties") and element.HasProperties:
-            for pset in element.HasProperties:
-                if hasattr(pset, "Name") and pset.Name in mapping_config:
-                    target_field = mapping_config[pset.Name]
-                    for prop in pset.HasProperties:
-                        if hasattr(prop, "NominalValue"):
-                            value = prop.NominalValue.wrappedValue if prop.NominalValue else None
-                            if value is not None:
-                                setattr(element, target_field, value)
-    return model
+        element_changes = []
+        element_id = element.id()
+        element_type = element.is_a()
+        element_name = getattr(element, "Name", "Unnamed")
+        
+        # Process property sets (custom properties to standard properties)
+        custom_psets = {}
+        standard_psets = {}
+        
+        if hasattr(element, "IsDefinedBy"):
+            for definition in element.IsDefinedBy:
+                if hasattr(definition, "RelatingPropertyDefinition"):
+                    prop_def = definition.RelatingPropertyDefinition
+                    
+                    # Handle regular property sets
+                    if prop_def.is_a("IfcPropertySet"):
+                        pset_name = prop_def.Name
+                        
+                        # Check if this pset is in our mapping config as a source
+                        if pset_name in mapping_config:
+                            # Get the target schema pset
+                            target_pset_name = mapping_config[pset_name]
+                            
+                            # Store properties for later transfer
+                            if hasattr(prop_def, "HasProperties"):
+                                props_dict = {}
+                                for prop in prop_def.HasProperties:
+                                    if hasattr(prop, "Name") and hasattr(prop, "NominalValue"):
+                                        value = prop.NominalValue.wrappedValue if prop.NominalValue else None
+                                        if value is not None:
+                                            props_dict[prop.Name] = value
+                                
+                                if props_dict:
+                                    custom_psets[pset_name] = props_dict
+                                    
+                                    # Create or get the target pset
+                                    target_pset = None
+                                    for def2 in element.IsDefinedBy:
+                                        if hasattr(def2, "RelatingPropertyDefinition"):
+                                            pd = def2.RelatingPropertyDefinition
+                                            if pd.is_a("IfcPropertySet") and pd.Name == target_pset_name:
+                                                target_pset = pd
+                                                break
+                                    
+                                    if not target_pset:
+                                        # Create new standard property set
+                                        target_pset = model.createIfcPropertySet(
+                                            GlobalId=ifcopenshell.guid.new(),
+                                            OwnerHistory=model.by_type("IfcOwnerHistory")[0] if model.by_type("IfcOwnerHistory") else None,
+                                            Name=target_pset_name,
+                                            Description=f"Mapped from {pset_name}",
+                                            HasProperties=[]
+                                        )
+                                        # Connect the new pset to the element
+                                        model.createIfcRelDefinesByProperties(
+                                            GlobalId=ifcopenshell.guid.new(),
+                                            OwnerHistory=model.by_type("IfcOwnerHistory")[0] if model.by_type("IfcOwnerHistory") else None,
+                                            RelatedObjects=[element],
+                                            RelatingPropertyDefinition=target_pset
+                                        )
+                                    
+                                    # Transfer the properties
+                                    for prop_name, prop_value in props_dict.items():
+                                        # Check if property already exists
+                                        existing_prop = None
+                                        if target_pset.HasProperties:
+                                            for p in target_pset.HasProperties:
+                                                if p.Name == prop_name:
+                                                    existing_prop = p
+                                                    break
+                                        
+                                        # Create new property or update existing
+                                        if existing_prop:
+                                            # Update existing property
+                                            if hasattr(existing_prop, "NominalValue"):
+                                                # Create appropriate value based on type
+                                                value_type = type(prop_value).__name__
+                                                if value_type == "float":
+                                                    new_value = model.createIfcReal(prop_value)
+                                                elif value_type == "int":
+                                                    new_value = model.createIfcInteger(prop_value)
+                                                elif value_type == "bool":
+                                                    new_value = model.createIfcBoolean(prop_value)
+                                                else:
+                                                    new_value = model.createIfcText(str(prop_value))
+                                                
+                                                existing_prop.NominalValue = new_value
+                                                changes_made += 1
+                                                element_changes.append(f"Updated property {prop_name} in {target_pset_name}")
+                                        else:
+                                            # Create new property
+                                            value_type = type(prop_value).__name__
+                                            if value_type == "float":
+                                                new_value = model.createIfcReal(prop_value)
+                                            elif value_type == "int":
+                                                new_value = model.createIfcInteger(prop_value)
+                                            elif value_type == "bool":
+                                                new_value = model.createIfcBoolean(prop_value)
+                                            else:
+                                                new_value = model.createIfcText(str(prop_value))
+                                            
+                                            new_prop = model.createIfcPropertySingleValue(
+                                                Name=prop_name,
+                                                Description=f"Mapped from {pset_name}",
+                                                NominalValue=new_value,
+                                                Unit=None
+                                            )
+                                            
+                                            # Add property to the target pset
+                                            props = list(target_pset.HasProperties) if target_pset.HasProperties else []
+                                            props.append(new_prop)
+                                            target_pset.HasProperties = props
+                                            
+                                            changes_made += 1
+                                            element_changes.append(f"Added property {prop_name} to {target_pset_name}")
+        
+        if element_changes:
+            changes_log.append({
+                "element_id": element_id,
+                "element_type": element_type,
+                "element_name": element_name,
+                "changes": element_changes
+            })
+    
+    return model, changes_log, changes_made
 
-model = apply_mapping(model, mapping_config)
-fixed_ifc_file = "fixed_model.ifc"
+# Apply the mapping
+model, changes_log, changes_made = apply_mapping(model, mapping_config)
+
+# Write the updated model to a file
+fixed_ifc_file = f"fixed_{file_name}"
 model.write(fixed_ifc_file)
 
-html_preview = f"<html><head><title>IFC Report</title></head><body>"
-html_preview += f"<h1>Report for {file_name}</h1>"
-html_preview += f"<p>Processed on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>"
-html_preview += "<h2>Mapping Summary</h2><ul>"
-for key, target in mapping_config.items():
-    html_preview += f"<li>{key} mapped to {target}</li>"
-html_preview += "</ul></body></html>"
+# After processing create the output
+model.write(fixed_ifc_file)
+with open(fixed_ifc_file, "rb") as f:
+    ifc_bytes = f.read()
+    
+# Convert bytes to base64 string for JSON serialization
+ifc_bytes_base64 = base64.b64encode(ifc_bytes).decode('utf-8')
 
+# Create results with base64 encoded data instead of raw bytes
 results = {
-    "filename": file_name,
-    "html_content": html_preview,
-    "fixedIfcFile": fixed_ifc_file
+    "fixedIfcData_base64": ifc_bytes_base64,
+    "filename": fixed_ifc_file,
+    "modelInfo": model_info,
+    "changesMade": changes_made,
 }
-validation_result_json = json.dumps(results, default=str, ensure_ascii=False)
+
+json.dumps(results)
     `);
 
-    const resultJson = pyodide.globals.get("validation_result_json");
-    const results = JSON.parse(resultJson);
-    const fixedIfcData = pyodide.FS.readFile(results.fixedIfcFile);
-    results.fixedIfcData = fixedIfcData;
-    results.language_code = effectiveLanguage;
-    results.available_languages = Object.keys(translations);
+    const resultsJson = pyodide.runPython("json.dumps(results)");
+    const pythonResults = JSON.parse(resultsJson);
 
-    self.postMessage({
-      type: "complete",
-      results: results,
-      message: getConsoleMessage(
-        "console.success.processingComplete",
-        "Your IFC file has been processed."
-      ),
-    });
+    // Convert the base64 string back to Uint8Array
+    const base64Data = pythonResults.fixedIfcData_base64;
+    const binaryString = atob(base64Data);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+
+    // Create the results object with proper Uint8Array data
+    const results = {
+      fixedIfcData: bytes,
+      filename: pythonResults.filename,
+      modelInfo: pythonResults.modelInfo,
+      changesMade: pythonResults.changesMade,
+      language_code: effectiveLanguage,
+      available_languages: Object.keys(translations),
+    };
+
+    // Send the results back
+    self.postMessage({ type: "complete", results });
   } catch (error) {
     console.error("Worker error:", error);
 
