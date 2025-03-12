@@ -1,0 +1,23 @@
+{
+  "console": {
+    "loading": {
+      "pyodide": "Loading Pyodide...",
+      "pyodideSuccess": "Pyodide loaded successfully",
+      "micropipPatch": "Patching micropip...",
+      "ifcOpenShell": "Installing IfcOpenShell...",
+      "dependencies": "Installing additional dependencies...",
+      "processingMapping": "Applying mapping configuration..."
+    },
+    "error": {
+      "pyodideLoad": "Failed to load Pyodide: {{message}}",
+      "generic": "An error occurred: {{message}}",
+      "outOfMemory": "Pyodide ran out of memory. The page will reload automatically to free resources."
+    },
+    "success": {
+      "processingComplete": "Your IFC file has been processed."
+    }
+  },
+  "report": {
+    "loadingTranslations": "Loading translations..."
+  }
+}
