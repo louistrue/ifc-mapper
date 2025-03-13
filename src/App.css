@@ -440,6 +440,22 @@ section {
   transition: all 0.2s;
 }
 
+/* Selected node styles */
+.react-flow__node.selected {
+  box-shadow: 0 0 0 2px #ff3366 !important;
+  border-color: #ff3366 !important;
+  z-index: 10 !important;
+  transform: scale(1.02);
+  transition: all 0.2s ease;
+}
+
+.custom-node.selected {
+  box-shadow: 0 0 0 2px #ff3366 !important;
+  border-color: #ff3366 !important;
+  transform: scale(1.02);
+  transition: all 0.2s ease;
+}
+
 /* Make sure the handles are properly positioned and styled */
 .react-flow__handle {
   border: 2px solid white;

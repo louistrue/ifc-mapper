@@ -186,6 +186,7 @@ interface WorkerMessageEvent {
     fileName?: string;
     language?: string;
     mappingConfig?: Record<string, string>;
+    fullMappingConfig?: Record<string, string>;
   };
 }
 

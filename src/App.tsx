@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import MappingVisual from "./components/MappingVisual";
 // We need to import the worker with the ?worker suffix
 import IfcWorker from "./worker/ifcWorker.js?worker";
+import { MappingMode } from "./components/mapping-visual/utils/types";
 import "./App.css";
 
 interface MappingConfigState {
@@ -23,6 +24,13 @@ interface ProcessingResults {
   changesMade: number;
   language_code?: string;
   available_languages?: string[];
+  filter_summary?: Record<
+    string,
+    {
+      target: string;
+      filtered_classes: string[];
+    }
+  >;
 }
 
 interface WorkerErrorData {
@@ -116,13 +124,31 @@ function App() {
       setError(null);
       setIsProcessing(true);
 
+      // Convert the complex mapping config to the format expected by the worker
+      const simplifiedMappingConfig: Record<string, string> = {};
+
+      // Process each mapping entry
+      Object.entries(mappingConfig).forEach(([source, mappingStr]) => {
+        try {
+          // Parse the JSON string back to an object
+          const mapping = JSON.parse(mappingStr as string);
+          // Extract just the target property for the worker
+          simplifiedMappingConfig[source] = mapping.target;
+        } catch {
+          // If parsing fails, use the value as is (for backward compatibility)
+          simplifiedMappingConfig[source] = mappingStr as string;
+        }
+      });
+
       selectedFile.arrayBuffer().then((arrayBuffer) => {
         if (workerRef.current) {
           workerRef.current.postMessage({
             arrayBuffer,
             fileName: selectedFile.name,
             language: "en",
-            mappingConfig,
+            mappingConfig: simplifiedMappingConfig,
+            // Pass the full mapping config with IFC class filters as a separate parameter
+            fullMappingConfig: mappingConfig,
           });
         }
       });
@@ -135,7 +161,19 @@ function App() {
     }
   };
 
-  const handleMappingChange = (sourcePset: string, targetPset: string) => {
+  const handleMappingChange = (
+    sourcePset: string,
+    targetPset: string,
+    mode: MappingMode,
+    additionalData?: Record<string, unknown>
+  ) => {
+    console.log("Mapping change:", {
+      sourcePset,
+      targetPset,
+      mode,
+      additionalData,
+    });
+
     setMappingConfig((prev) => {
       // If targetPset is empty, remove the mapping
       if (!targetPset) {
@@ -144,7 +182,18 @@ function App() {
         return newConfig;
       }
 
-      return { ...prev, [sourcePset]: targetPset };
+      // Create the new mapping entry
+      const newMapping = {
+        target: targetPset,
+        // Include IFC class filter if provided
+        ifcClassFilter: additionalData?.ifcClassFilter || [],
+      };
+
+      // Store the mapping with additional data
+      return {
+        ...prev,
+        [sourcePset]: JSON.stringify(newMapping),
+      };
     });
   };
 
@@ -455,6 +504,7 @@ function App() {
                     targetPsets={modelInfo.standard_psets}
                     currentMappings={mappingConfig}
                     onMappingUpdate={handleMappingChange}
+                    ifcClasses={modelInfo.element_types}
                   />
                 </div>
 
@@ -538,6 +588,50 @@ function App() {
                             <p style={{ margin: 0 }}>ERROR: {error.message}</p>
                           </div>
                         )}
+
+                        {/* Display IFC class filter summary if available */}
+                        {results?.filter_summary &&
+                          Object.keys(results.filter_summary).length > 0 && (
+                            <div
+                              style={{
+                                marginTop: "6px",
+                                color: "#22C55E",
+                                borderTop: "1px dashed #444",
+                                paddingTop: "4px",
+                                fontSize: "11px",
+                              }}
+                            >
+                              <p
+                                style={{
+                                  margin: "0 0 4px 0",
+                                  fontWeight: "bold",
+                                }}
+                              >
+                                Active IFC Class Filters:
+                              </p>
+                              {Object.entries(results.filter_summary).map(
+                                ([source, info], index) => (
+                                  <div
+                                    key={index}
+                                    style={{ marginBottom: "4px" }}
+                                  >
+                                    <span style={{ color: "#aaa" }}>
+                                      {source} → {info.target}:
+                                    </span>
+                                    <br />
+                                    <span
+                                      style={{
+                                        color: "#22C55E",
+                                        fontSize: "10px",
+                                      }}
+                                    >
+                                      {info.filtered_classes.join(", ")}
+                                    </span>
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          )}
                       </div>
                     </div>
 

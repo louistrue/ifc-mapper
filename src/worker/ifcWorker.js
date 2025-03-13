@@ -208,7 +208,13 @@ await micropip.install('numpy')
 }
 
 self.onmessage = async (event) => {
-  const { arrayBuffer, fileName, language = "en", mappingConfig } = event.data;
+  const {
+    arrayBuffer,
+    fileName,
+    language = "en",
+    mappingConfig,
+    fullMappingConfig,
+  } = event.data;
 
   console.log("Worker: Language received:", language);
   const normalizedLanguage = language.toLowerCase().split("-")[0];
@@ -324,6 +330,7 @@ json.dumps(model_info)
 
     // Now apply the mapping configuration if provided
     const mappingConfigStr = JSON.stringify(mappingConfig || {});
+    const fullMappingConfigStr = JSON.stringify(fullMappingConfig || {});
     const fileNameStr = JSON.stringify(fileName || "unnamed_model.ifc");
 
     self.postMessage({
@@ -345,14 +352,17 @@ model = ifcopenshell.open("model.ifc")
 
 # Load mapping configuration from JSON string
 mapping_config = json.loads('''${mappingConfigStr}''')
+# Load full mapping configuration with IFC class filters
+full_mapping_config = json.loads('''${fullMappingConfigStr}''')
 # Parse filename from JavaScript
 file_name = json.loads('''${fileNameStr}''')
 
-def apply_mapping(model, mapping_config):
+def apply_mapping(model, mapping_config, full_mapping_config):
     changes_log = []
     # Counter for changes made
     changes_made = 0
     
+    # Process each element in the model
     for element in model.by_type("IfcElement"):
         element_changes = []
         element_id = element.id()
@@ -377,59 +387,94 @@ def apply_mapping(model, mapping_config):
                             # Get the target schema pset
                             target_pset_name = mapping_config[pset_name]
                             
-                            # Store properties for later transfer
-                            if hasattr(prop_def, "HasProperties"):
-                                props_dict = {}
-                                for prop in prop_def.HasProperties:
-                                    if hasattr(prop, "Name") and hasattr(prop, "NominalValue"):
-                                        value = prop.NominalValue.wrappedValue if prop.NominalValue else None
-                                        if value is not None:
-                                            props_dict[prop.Name] = value
-                                
-                                if props_dict:
-                                    custom_psets[pset_name] = props_dict
+                            # Check if we have IFC class filters for this mapping
+                            apply_mapping = True
+                            if pset_name in full_mapping_config:
+                                try:
+                                    # Parse the full mapping config to get IFC class filters
+                                    full_mapping = json.loads(full_mapping_config[pset_name])
+                                    if "ifcClassFilter" in full_mapping and len(full_mapping["ifcClassFilter"]) > 0:
+                                        # Only apply mapping if element type is in the filter list
+                                        if element_type not in full_mapping["ifcClassFilter"]:
+                                            apply_mapping = False
+                                            print(f"Skipping mapping for {element_type} (id: {element_id}) - not in filter list: {full_mapping['ifcClassFilter']}")
+                                        else:
+                                            print(f"Applying mapping for {element_type} (id: {element_id}) - matches filter: {full_mapping['ifcClassFilter']}")
+                                except Exception as e:
+                                    # If parsing fails, proceed with mapping
+                                    print(f"Error parsing mapping config: {e}, proceeding with mapping")
+                                    pass
+                            
+                            # Only proceed if the mapping should be applied to this element type
+                            if apply_mapping:
+                                # Store properties for later transfer
+                                if hasattr(prop_def, "HasProperties"):
+                                    props_dict = {}
+                                    for prop in prop_def.HasProperties:
+                                        if hasattr(prop, "Name") and hasattr(prop, "NominalValue"):
+                                            value = prop.NominalValue.wrappedValue if prop.NominalValue else None
+                                            if value is not None:
+                                                props_dict[prop.Name] = value
                                     
-                                    # Create or get the target pset
-                                    target_pset = None
-                                    for def2 in element.IsDefinedBy:
-                                        if hasattr(def2, "RelatingPropertyDefinition"):
-                                            pd = def2.RelatingPropertyDefinition
-                                            if pd.is_a("IfcPropertySet") and pd.Name == target_pset_name:
-                                                target_pset = pd
-                                                break
-                                    
-                                    if not target_pset:
-                                        # Create new standard property set
-                                        target_pset = model.createIfcPropertySet(
-                                            GlobalId=ifcopenshell.guid.new(),
-                                            OwnerHistory=model.by_type("IfcOwnerHistory")[0] if model.by_type("IfcOwnerHistory") else None,
-                                            Name=target_pset_name,
-                                            Description=f"Mapped from {pset_name}",
-                                            HasProperties=[]
-                                        )
-                                        # Connect the new pset to the element
-                                        model.createIfcRelDefinesByProperties(
-                                            GlobalId=ifcopenshell.guid.new(),
-                                            OwnerHistory=model.by_type("IfcOwnerHistory")[0] if model.by_type("IfcOwnerHistory") else None,
-                                            RelatedObjects=[element],
-                                            RelatingPropertyDefinition=target_pset
-                                        )
-                                    
-                                    # Transfer the properties
-                                    for prop_name, prop_value in props_dict.items():
-                                        # Check if property already exists
-                                        existing_prop = None
-                                        if target_pset.HasProperties:
-                                            for p in target_pset.HasProperties:
-                                                if p.Name == prop_name:
-                                                    existing_prop = p
+                                    if props_dict:
+                                        custom_psets[pset_name] = props_dict
+                                        
+                                        # Create or get the target pset
+                                        target_pset = None
+                                        for def2 in element.IsDefinedBy:
+                                            if hasattr(def2, "RelatingPropertyDefinition"):
+                                                pd = def2.RelatingPropertyDefinition
+                                                if pd.is_a("IfcPropertySet") and pd.Name == target_pset_name:
+                                                    target_pset = pd
                                                     break
                                         
-                                        # Create new property or update existing
-                                        if existing_prop:
-                                            # Update existing property
-                                            if hasattr(existing_prop, "NominalValue"):
-                                                # Create appropriate value based on type
+                                        if not target_pset:
+                                            # Create new standard property set
+                                            target_pset = model.createIfcPropertySet(
+                                                GlobalId=ifcopenshell.guid.new(),
+                                                OwnerHistory=model.by_type("IfcOwnerHistory")[0] if model.by_type("IfcOwnerHistory") else None,
+                                                Name=target_pset_name,
+                                                Description=f"Mapped from {pset_name}",
+                                                HasProperties=[]
+                                            )
+                                            # Connect the new pset to the element
+                                            model.createIfcRelDefinesByProperties(
+                                                GlobalId=ifcopenshell.guid.new(),
+                                                OwnerHistory=model.by_type("IfcOwnerHistory")[0] if model.by_type("IfcOwnerHistory") else None,
+                                                RelatedObjects=[element],
+                                                RelatingPropertyDefinition=target_pset
+                                            )
+                                        
+                                        # Transfer the properties
+                                        for prop_name, prop_value in props_dict.items():
+                                            # Check if property already exists
+                                            existing_prop = None
+                                            if target_pset.HasProperties:
+                                                for p in target_pset.HasProperties:
+                                                    if p.Name == prop_name:
+                                                        existing_prop = p
+                                                        break
+                                            
+                                            # Create new property or update existing
+                                            if existing_prop:
+                                                # Update existing property
+                                                if hasattr(existing_prop, "NominalValue"):
+                                                    # Create appropriate value based on type
+                                                    value_type = type(prop_value).__name__
+                                                    if value_type == "float":
+                                                        new_value = model.createIfcReal(prop_value)
+                                                    elif value_type == "int":
+                                                        new_value = model.createIfcInteger(prop_value)
+                                                    elif value_type == "bool":
+                                                        new_value = model.createIfcBoolean(prop_value)
+                                                    else:
+                                                        new_value = model.createIfcText(str(prop_value))
+                                                    
+                                                    existing_prop.NominalValue = new_value
+                                                    changes_made += 1
+                                                    element_changes.append(f"Updated property {prop_name} in {target_pset_name}")
+                                            else:
+                                                # Create new property
                                                 value_type = type(prop_value).__name__
                                                 if value_type == "float":
                                                     new_value = model.createIfcReal(prop_value)
@@ -440,35 +485,20 @@ def apply_mapping(model, mapping_config):
                                                 else:
                                                     new_value = model.createIfcText(str(prop_value))
                                                 
-                                                existing_prop.NominalValue = new_value
+                                                new_prop = model.createIfcPropertySingleValue(
+                                                    Name=prop_name,
+                                                    Description=f"Mapped from {pset_name}",
+                                                    NominalValue=new_value,
+                                                    Unit=None
+                                                )
+                                                
+                                                # Add property to the target pset
+                                                props = list(target_pset.HasProperties) if target_pset.HasProperties else []
+                                                props.append(new_prop)
+                                                target_pset.HasProperties = props
+                                                
                                                 changes_made += 1
-                                                element_changes.append(f"Updated property {prop_name} in {target_pset_name}")
-                                        else:
-                                            # Create new property
-                                            value_type = type(prop_value).__name__
-                                            if value_type == "float":
-                                                new_value = model.createIfcReal(prop_value)
-                                            elif value_type == "int":
-                                                new_value = model.createIfcInteger(prop_value)
-                                            elif value_type == "bool":
-                                                new_value = model.createIfcBoolean(prop_value)
-                                            else:
-                                                new_value = model.createIfcText(str(prop_value))
-                                            
-                                            new_prop = model.createIfcPropertySingleValue(
-                                                Name=prop_name,
-                                                Description=f"Mapped from {pset_name}",
-                                                NominalValue=new_value,
-                                                Unit=None
-                                            )
-                                            
-                                            # Add property to the target pset
-                                            props = list(target_pset.HasProperties) if target_pset.HasProperties else []
-                                            props.append(new_prop)
-                                            target_pset.HasProperties = props
-                                            
-                                            changes_made += 1
-                                            element_changes.append(f"Added property {prop_name} to {target_pset_name}")
+                                                element_changes.append(f"Added property {prop_name} to {target_pset_name}")
         
         if element_changes:
             changes_log.append({
@@ -478,10 +508,25 @@ def apply_mapping(model, mapping_config):
                 "changes": element_changes
             })
     
-    return model, changes_log, changes_made
+    # Create a summary of applied filters
+    filter_summary = {}
+    for source, mapping_str in full_mapping_config.items():
+        try:
+            mapping = json.loads(mapping_str)
+            if "ifcClassFilter" in mapping and len(mapping["ifcClassFilter"]) > 0:
+                filter_summary[source] = {
+                    "target": mapping["target"],
+                    "filtered_classes": mapping["ifcClassFilter"]
+                }
+        except:
+            pass
+    
+    print("Filter summary:", filter_summary)
+    
+    return model, changes_log, changes_made, filter_summary
 
 # Apply the mapping
-model, changes_log, changes_made = apply_mapping(model, mapping_config)
+model, changes_log, changes_made, filter_summary = apply_mapping(model, mapping_config, full_mapping_config)
 
 # Write the updated model to a file
 fixed_ifc_file = f"fixed_{file_name}"
@@ -501,6 +546,7 @@ results = {
     "filename": fixed_ifc_file,
     "modelInfo": model_info,
     "changesMade": changes_made,
+    "filter_summary": filter_summary,
 }
 
 json.dumps(results)
@@ -523,6 +569,7 @@ json.dumps(results)
       filename: pythonResults.filename,
       modelInfo: pythonResults.modelInfo,
       changesMade: pythonResults.changesMade,
+      filter_summary: pythonResults.filter_summary,
       language_code: effectiveLanguage,
       available_languages: Object.keys(translations),
     };

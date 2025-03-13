@@ -17,6 +17,7 @@ const MappingVisual = (props: MappingVisualProps) => {
     sourcePsets: props.sourcePsets,
     targetPsets: props.targetPsets,
     currentMappings: props.currentMappings,
+    ifcClasses: props.ifcClasses,
   });
 
   return (

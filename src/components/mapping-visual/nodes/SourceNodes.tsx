@@ -23,6 +23,21 @@ export const SourceNode = ({ data }: NodeProps) => (
       <span className="inline-block w-2 h-2 rounded-full bg-blue-500 mr-1"></span>
       Source
     </div>
+
+    {/* Input handle for IFC class filter connections */}
+    <Handle
+      type="target"
+      position={Position.Left}
+      id="left"
+      style={{
+        background: "#22C55E", // Green color to match IFC class filter
+        width: "10px",
+        height: "10px",
+        border: "2px solid #e8e8d8",
+      }}
+    />
+
+    {/* Output handle for mapping connections */}
     <Handle
       type="source"
       position={Position.Right}
@@ -60,6 +75,21 @@ export const QuantitySourceNode = ({ data }: NodeProps) => (
       <span className="inline-block w-2 h-2 rounded-full bg-blue-500 mr-1"></span>
       Quantity {data.unit && `(${data.unit})`}
     </div>
+
+    {/* Input handle for IFC class filter connections */}
+    <Handle
+      type="target"
+      position={Position.Left}
+      id="left"
+      style={{
+        background: "#22C55E", // Green color to match IFC class filter
+        width: "10px",
+        height: "10px",
+        border: "2px solid #e8e8d8",
+      }}
+    />
+
+    {/* Output handle for mapping connections */}
     <Handle
       type="source"
       position={Position.Right}
@@ -97,6 +127,21 @@ export const ClassificationSourceNode = ({ data }: NodeProps) => (
       <span className="inline-block w-2 h-2 rounded-full bg-blue-500 mr-1"></span>
       {data.type} Classification
     </div>
+
+    {/* Input handle for IFC class filter connections */}
+    <Handle
+      type="target"
+      position={Position.Left}
+      id="left"
+      style={{
+        background: "#22C55E", // Green color to match IFC class filter
+        width: "10px",
+        height: "10px",
+        border: "2px solid #e8e8d8",
+      }}
+    />
+
+    {/* Output handle for mapping connections */}
     <Handle
       type="source"
       position={Position.Right}

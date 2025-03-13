@@ -7,19 +7,43 @@ export const createEdgesFromMappings = (
   const edges: Edge[] = [];
 
   // Create edges for Pset mappings from the currentMappings
-  Object.entries(currentMappings).forEach(([source, target]) => {
-    if (target) {
-      edges.push({
-        id: `pset-${source}-to-${target}`,
-        source: `source-pset-${source}`,
-        target: `target-pset-${target}`,
-        animated: true,
-        style: {
-          stroke: "#6366f1",
-          strokeWidth: 2,
-          opacity: 0.8,
-        },
-      });
+  Object.entries(currentMappings).forEach(([source, targetOrMapping]) => {
+    try {
+      // Try to parse the mapping as JSON (new format)
+      const mapping = JSON.parse(targetOrMapping);
+      const target = mapping.target;
+
+      if (target) {
+        edges.push({
+          id: `pset-${source}-to-${target}`,
+          source: `source-pset-${source}`,
+          target: `target-pset-${target}`,
+          animated: true,
+          style: {
+            stroke: "#6366f1",
+            strokeWidth: 2,
+            opacity: 0.8,
+          },
+          data: {
+            ifcClassFilter: mapping.ifcClassFilter || [],
+          },
+        });
+      }
+    } catch (_unused) {
+      // If parsing fails, use the old format (direct string)
+      if (targetOrMapping) {
+        edges.push({
+          id: `pset-${source}-to-${targetOrMapping}`,
+          source: `source-pset-${source}`,
+          target: `target-pset-${targetOrMapping}`,
+          animated: true,
+          style: {
+            stroke: "#6366f1",
+            strokeWidth: 2,
+            opacity: 0.8,
+          },
+        });
+      }
     }
   });
 

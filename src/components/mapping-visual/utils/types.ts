@@ -4,6 +4,7 @@ export enum MappingMode {
   PROPERTY = "property",
   QUANTITY = "quantity",
   CLASSIFICATION = "classification",
+  IFC_CLASS = "ifcClass",
 }
 
 // Define proper types for node items
@@ -25,6 +26,11 @@ export interface ClassificationNodeItem extends NodeItem {
   type?: string;
 }
 
+// New interface for IFC class node items
+export interface IfcClassNodeItem extends NodeItem {
+  selectedClasses?: string[];
+}
+
 export interface MappingVisualProps {
   sourcePsets: string[];
   targetPsets: string[];
@@ -35,4 +41,5 @@ export interface MappingVisualProps {
     mode: MappingMode,
     additionalData?: Record<string, unknown>
   ) => void;
+  ifcClasses?: string[];
 }
